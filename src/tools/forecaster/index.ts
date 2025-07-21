@@ -11,6 +11,8 @@ export interface ForecasterInput {
   context?: string;
   numForecasts?: number;
   usePerplexity?: boolean;
+  model?: string;
+  useReasoningFirst?: boolean;
 }
 
 export interface ForecasterOutput {
@@ -26,14 +28,22 @@ export interface ForecasterOutput {
     stdDev: number;
   };
   llmInteractions: RichLLMInteraction[];
+  cost?: {
+    totalUSD: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    model: string;
+  };
 }
 
 // Simplified input schema
 const inputSchema = z.object({
   question: z.string().min(1).max(500).describe('The question to forecast'),
   context: z.string().max(1000).optional().describe('Additional context for the forecast'),
-  numForecasts: z.number().min(1).max(20).optional().default(6).describe('Number of independent forecasts to generate'),
-  usePerplexity: z.boolean().optional().default(false).describe('Whether to use Perplexity for research')
+  numForecasts: z.number().min(1).max(20).optional().default(1).describe('Number of independent forecasts to generate'),
+  usePerplexity: z.boolean().optional().default(false).describe('Whether to use Perplexity for research'),
+  model: z.string().optional().describe('Model to use for forecasting (e.g., claude-opus-4-20250514)'),
+  useReasoningFirst: z.boolean().optional().default(false).describe('Use reasoning-first approach to avoid anchoring bias')
 }) satisfies z.ZodType<ForecasterInput>;
 
 // Simplified output schema
@@ -49,7 +59,13 @@ const outputSchema = z.object({
     mean: z.number(),
     stdDev: z.number()
   }).describe('Statistical summary of the forecasts'),
-  llmInteractions: z.array(llmInteractionSchema).describe('LLM interactions for monitoring and debugging')
+  llmInteractions: z.array(llmInteractionSchema).describe('LLM interactions for monitoring and debugging'),
+  cost: z.object({
+    totalUSD: z.number(),
+    totalInputTokens: z.number(),
+    totalOutputTokens: z.number(),
+    model: z.string()
+  }).optional().describe('Cost information for the forecast')
 }) satisfies z.ZodType<ForecasterOutput>;
 
 export class ForecasterTool extends Tool<ForecasterInput, ForecasterOutput> {
@@ -75,7 +91,8 @@ export class ForecasterTool extends Tool<ForecasterInput, ForecasterOutput> {
         question: input.question,
         context: input.context,
         numForecasts: input.numForecasts ?? 6,
-        usePerplexity: input.usePerplexity ?? false
+        usePerplexity: input.usePerplexity ?? false,
+        model: input.model
       });
       
       return {
@@ -90,7 +107,8 @@ export class ForecasterTool extends Tool<ForecasterInput, ForecasterOutput> {
           mean: result.statistics.mean,
           stdDev: result.statistics.std_dev
         },
-        llmInteractions: result.llmInteractions
+        llmInteractions: result.llmInteractions,
+        cost: result.cost
       };
     } catch (error) {
       context.logger.error('[ForecasterTool] Error generating forecast:', error);

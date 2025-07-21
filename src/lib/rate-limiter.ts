@@ -69,9 +69,11 @@ class InMemoryRateLimiter {
 }
 
 // Export singleton instances for different rate limit tiers
-export const standardRateLimit = new InMemoryRateLimiter(60 * 1000, 60); // 60/min
-export const strictRateLimit = new InMemoryRateLimiter(60 * 1000, 10); // 10/min for sensitive endpoints
-export const importRateLimit = new InMemoryRateLimiter(60 * 60 * 1000, 20); // 20/hour for imports
+// In development, use very permissive limits for testing
+const isDevelopment = process.env.NODE_ENV === 'development';
+export const standardRateLimit = new InMemoryRateLimiter(60 * 1000, isDevelopment ? 10000 : 60); // 10k/min in dev, 60/min in prod
+export const strictRateLimit = new InMemoryRateLimiter(60 * 1000, isDevelopment ? 1000 : 10); // 1k/min in dev, 10/min in prod
+export const importRateLimit = new InMemoryRateLimiter(60 * 60 * 1000, isDevelopment ? 1000 : 20); // 1k/hour in dev, 20/hour in prod
 
 // Helper function to get client identifier
 export function getClientIdentifier(request: Request): string {

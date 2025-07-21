@@ -15,6 +15,7 @@ import { logger } from "@/lib/logger";
 import { getRandomElement, getPercentile } from "@/utils/safeArrayAccess";
 import { sessionContext } from "@/lib/helicone/sessionContext";
 import { createHeliconeHeaders } from "@/lib/helicone/sessions";
+import { calculateApiCostInDollars } from "@/utils/costCalculator";
 
 interface ForecastResponse {
   probability: number;
@@ -26,6 +27,8 @@ interface ForecastGeneratorOptions {
   context?: string;
   numForecasts: number;
   usePerplexity: boolean;
+  model?: string;
+  useReasoningFirst?: boolean; // New option to use reasoning-first approach
 }
 
 /**
@@ -39,7 +42,7 @@ async function generateSingleForecast(
   const timestamp = Date.now();
   const randomSeed = Math.random();
 
-  // Random prefix to break cache patterns
+  // Random prefix and framing to encourage variation
   const randomPrefixes = [
     "Let me think about this.",
     "Considering the question,",
@@ -47,26 +50,112 @@ async function generateSingleForecast(
     "Looking at this forecast,",
     "Evaluating the probability,",
     "Assessing this question,",
+    "From my perspective,",
+    "Based on current trends,",
+    "Taking a different angle,",
+    "Here's my analysis:",
+    "After careful consideration,",
+    "Examining the evidence,",
+    "My assessment is:",
+    "Looking at the facts,",
+    "Breaking this down,",
   ];
   const prefix = getRandomElement(randomPrefixes, "Let me think about this.");
+  
+  // Add random perspective modifiers to increase variation
+  const perspectiveModifiers = [
+    "",
+    " Remember to consider both optimistic and pessimistic scenarios.",
+    " Focus on recent developments and current momentum.",
+    " Consider historical patterns but don't be bound by them.",
+    " Think about what information might be missing.",
+    " Consider tail risks and unexpected factors.",
+    " Focus on the most likely scenarios.",
+    " Don't anchor too strongly on base rates.",
+    " Consider how this might differ from similar past events.",
+  ];
+  const perspectiveModifier = getRandomElement(perspectiveModifiers, "");
+  
+  // Add variation in how we ask the question
+  const questionVariants = [
+    `Please forecast: ${options.question}`,
+    `What is the probability that ${options.question}`,
+    `Estimate the likelihood: ${options.question}`,
+    `What are the chances that ${options.question}`,
+    `How likely is it that ${options.question}`,
+  ];
+  const questionPrompt = getRandomElement(questionVariants, `Please forecast: ${options.question}`);
 
   const currentDate = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
-  const systemPrompt = `You are a careful forecaster. Given a question about a future event, provide:
-1. A probability estimate (0-100% with one decimal place, e.g., 65.2%)
-2. A one-sentence description of your reasoning
+  const currentDateTime = new Date().toISOString(); // Full ISO timestamp
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  
+  const systemPrompt = `You are an expert forecaster trained in the methods of superforecasters like those in Philip Tetlock's research. 
 
-Current date: ${currentDate}
+CRITICAL TIME CONTEXT:
+- Today's date is ${currentDate} (${new Date().toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })})
+- Current time: ${currentDateTime}
+- Tomorrow is ${tomorrow}
+- When evaluating events, ALWAYS check if they're about tomorrow, this week, or already past
 
-Consider base rates, current evidence, and uncertainties. IMPORTANT: Pay attention to the current date when forecasting - if the question asks about an event that should have already occurred, note this in your reasoning.
-Important: Give a precise probability with one decimal place (e.g., 37.5%, not 38%).
-Keep the reasoning very brief - just one clear sentence.
+When making forecasts, you MUST follow these steps IN ORDER:
+1. CHECK TIMING - Is this event about tomorrow? This week? Already past? Far future?
+2. REPHRASE the question to ensure you understand exactly what's being asked
+3. IDENTIFY the base rate - what's the historical frequency of similar events?
+4. CONSIDER arguments for YES - what evidence supports this outcome?
+5. CONSIDER arguments for NO - what evidence opposes this outcome?
+6. WEIGH THE EVIDENCE - which arguments are stronger and more reliable?
+7. CHECK FOR BIAS - are you being overconfident? Consider the outside view.
+8. ONLY AFTER COMPLETING ALL ABOVE STEPS: Derive your probability estimate
+   - If strong evidence points one way: 60-90%
+   - If overwhelming evidence or near-certain: 85-98%
+   - If highly uncertain: 20-40%
+   - If completely unknown: near 50%
+
+Key principles:
+- Use reference classes and base rates
+- Consider multiple scenarios  
+- Be appropriately uncertain about uncertain events
+- Avoid round numbers (use precise estimates like 23.7%, not 25%)
+- Events happening TOMORROW or THIS WEEK often have much higher certainty than distant events
+- If something is about tomorrow's weather, recent polls, or imminent events, probabilities can be 70-95%+
+- Don't cluster predictions around 10-20% - use the FULL 0-100% range appropriately
+- High probability events (60-90%) are common for likely outcomes
+- Very high probability (90%+) is appropriate for near-certain events
+- Remember: markets with 75%+ probability often reflect strong evidence
+
+CALIBRATION EXAMPLES:
+- Incumbent party winning in safe district: 85-95%
+- Tomorrow's weather matching today's forecast: 70-85%
+- Favorite team winning against underdog: 65-80%
+- Unknown candidate winning major election: 5-20%
+- Coin flip or 50/50 scenario: 45-55%
+
+IMPORTANT: If you find yourself predicting <20% for many different questions, you're likely underestimating. Most well-defined events have probabilities in the 20-80% range.
 
 [Session: ${timestamp}-${randomSeed}-${callNumber}]`;
 
-  const userPrompt = `${prefix} ${Math.random() < 0.5 ? "Please forecast: " : "What is the probability that "}${options.question}
+  const userPrompt = `${prefix} ${questionPrompt}
 ${options.context ? `\nContext: ${options.context}` : ""}
 
-Think carefully and provide your forecast. Random seed: ${Math.random()}`;
+IMPORTANT: Today is ${currentDate}. First check if this event is about:
+- Tomorrow (${tomorrow})
+- This week
+- Already past
+- Far future
+
+CRITICAL: You must complete your ENTIRE reasoning process BEFORE stating any probability number.
+Work through these steps:
+1. First identify WHEN this event would occur
+2. Find appropriate base rates and reference classes
+3. Consider evidence both for and against
+4. Synthesize the evidence
+5. ONLY THEN derive your probability
+
+For near-term events (tomorrow, this week), use current data and conditions.
+Provide your forecast as a precise probability (e.g., 23.7%, not 25%).${perspectiveModifier}
+
+Variation seed: ${Math.random()} | Call ${callNumber} | Time: ${timestamp}`;
 
   // Get session context if available
   const currentSession = sessionContext.getSession();
@@ -79,29 +168,29 @@ Think carefully and provide your forecast. Random seed: ${Math.random()}`;
 
   const result = await withTimeout(
     callClaudeWithTool<ForecastResponse>({
-      model: MODEL_CONFIG.forecasting,
+      model: options.model || MODEL_CONFIG.forecasting,
       system: systemPrompt,
       messages: [{ role: "user", content: userPrompt }],
       max_tokens: 1000,
-      temperature: 0.8, // Increased for more variation
+      temperature: 0.8, // Higher temperature for more variation
       toolName: "provide_forecast",
       toolDescription: "Provide a probability forecast with reasoning",
       toolSchema: {
         type: "object",
         properties: {
+          reasoning: {
+            type: "string",
+            description: "Detailed reasoning process including timing analysis, base rates, arguments for/against, and synthesis",
+          },
           probability: {
             type: "number",
             minimum: 0,
             maximum: 100,
             description:
-              "Probability estimate (0-100 with one decimal place, e.g. 65.2)",
-          },
-          reasoning: {
-            type: "string",
-            description: "One-sentence description of your reasoning",
+              "Probability estimate (0-100 with one decimal place, e.g. 23.7, not 25) - derived AFTER completing your reasoning",
           },
         },
-        required: ["probability", "reasoning"],
+        required: ["reasoning", "probability"],
       },
       heliconeHeaders
     }),
@@ -181,12 +270,16 @@ function removeOutliers(forecasts: ForecastResponse[]): {
 
 /**
  * Determine consensus level based on standard deviation
+ * More reasonable thresholds for probability forecasts
  */
 function determineConsensusLevel(std_dev: number): "low" | "medium" | "high" {
-  // High disagreement (std dev > 15) means low consensus
-  if (std_dev > 15) {
+  // Standard deviation thresholds for consensus:
+  // - High consensus: forecasts within ~5 percentage points (std dev <= 2.5)
+  // - Medium consensus: forecasts within ~10 percentage points (std dev <= 5)
+  // - Low consensus: wider spread (std dev > 5)
+  if (std_dev > 5) {
     return "low";
-  } else if (std_dev > 10) {
+  } else if (std_dev > 2.5) {
     return "medium";
   } else {
     return "high";
@@ -233,11 +326,19 @@ export async function generateForecastWithAggregation(
   };
   outliers_removed: ForecastResponse[];
   llmInteractions: RichLLMInteraction[];
+  cost: {
+    totalUSD: number;
+    totalInputTokens: number;
+    totalOutputTokens: number;
+    model: string;
+  };
 }> {
+  const modelName = options.model || MODEL_CONFIG.forecasting;
   console.log(`\n🔮 Generating forecast for: ${options.question}`);
   console.log(
-    `Making ${options.numForecasts} independent forecasts${options.usePerplexity ? " (with Perplexity research)" : ""}...\n`
+    `Making ${options.numForecasts} independent forecasts${options.usePerplexity ? " (with Perplexity research)" : ""}...`
   );
+  console.log(`Using model: ${modelName}\n`);
 
   // If using Perplexity, enhance context with research
   let enhancedOptions = options;
@@ -338,6 +439,25 @@ export async function generateForecastWithAggregation(
     `\n  Final forecast: ${stats.mean.toFixed(1)}% (${overallConsensus} consensus)`
   );
 
+  // Calculate total cost from all interactions
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  
+  llmInteractions.forEach(interaction => {
+    if (interaction.tokensUsed) {
+      totalInputTokens += interaction.tokensUsed.prompt || 0;
+      totalOutputTokens += interaction.tokensUsed.completion || 0;
+    }
+  });
+  
+  const actualModel = options.model || MODEL_CONFIG.forecasting;
+  const totalCostUSD = calculateApiCostInDollars(
+    { input_tokens: totalInputTokens, output_tokens: totalOutputTokens },
+    actualModel as any
+  );
+  
+  console.log(`[Forecast Cost] Tokens: ${totalInputTokens} input, ${totalOutputTokens} output, Cost: $${totalCostUSD}`);
+
   return {
     forecast: {
       probability: stats.mean,
@@ -348,5 +468,11 @@ export async function generateForecastWithAggregation(
     outliers_removed: outliers,
     statistics: stats,
     llmInteractions,
+    cost: {
+      totalUSD: totalCostUSD,
+      totalInputTokens,
+      totalOutputTokens,
+      model: actualModel
+    }
   };
 }
